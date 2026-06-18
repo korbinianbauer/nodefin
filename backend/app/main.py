@@ -121,3 +121,29 @@ def delete_strategy(sid: str) -> dict:
     if not store.delete_strategy(sid):
         raise HTTPException(status_code=404, detail="Strategy not found")
     return {"deleted": sid}
+
+
+# --------------------------- Frontend (static) ----------------------------- #
+# Serve the built React app (frontend/dist) from the same origin so the app's
+# relative /api/* calls work without a separate dev server or proxy.
+from pathlib import Path
+
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if _DIST.is_dir():
+    app.mount("/assets", StaticFiles(directory=_DIST / "assets"), name="assets")
+
+    @app.get("/")
+    def _index() -> FileResponse:
+        return FileResponse(_DIST / "index.html")
+
+    @app.get("/{full_path:path}")
+    def _spa(full_path: str) -> FileResponse:
+        # /api routes are registered above and match first; here we serve a real
+        # static file if it exists, otherwise fall back to the SPA entrypoint.
+        candidate = _DIST / full_path
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_DIST / "index.html")

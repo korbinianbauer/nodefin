@@ -21,3 +21,6 @@ backend/app/data/*.csv
 .DS_Store
 .idea/
 .vscode/
+
+# Runtime logs
+*.log
