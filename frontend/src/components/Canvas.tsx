@@ -20,6 +20,7 @@ function CanvasInner() {
   const onNodesChange = useStore((s) => s.onNodesChange);
   const onEdgesChange = useStore((s) => s.onEdgesChange);
   const onConnect = useStore((s) => s.onConnect);
+  const onConnectStart = useStore((s) => s.onConnectStart);
   const setActiveNode = useStore((s) => s.setActiveNode);
   const specByType = useStore((s) => s.specByType);
   const setGraph = useStore((s) => s.setGraph);
@@ -70,14 +71,16 @@ function CanvasInner() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onConnectStart={(_, params) => onConnectStart(params)}
         onInit={(inst) => (rfRef.current = inst)}
         onDrop={onDrop}
         onDragOver={onDragOver}
         onPaneClick={() => setActiveNode(null)}
         onNodeClick={(_, n) => setActiveNode(n.id)}
+        deleteKeyCode={['Delete', 'Backspace']}
         fitView
         proOptions={{ hideAttribution: true }}
-        defaultEdgeOptions={{ animated: true, style: { stroke: '#6b7280', strokeWidth: 2 } }}
+        defaultEdgeOptions={{ animated: false, style: { stroke: '#6b7280', strokeWidth: 2 } }}
       >
         <Background color="#2a2f3a" gap={18} />
         <Controls />

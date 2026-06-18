@@ -1,38 +1,8 @@
 """Leverage and price-panel transform nodes."""
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
-
 from ..metrics import infer_periods_per_year
 from .base import NodeSpec, ParamSpec, Port, register
-
-
-def _exec_combine(cfg: dict, inputs: dict) -> dict:
-    """Merge several price panels into one wide panel (column union)."""
-    panels = inputs.get("prices", [])
-    if not isinstance(panels, list):
-        panels = [panels]
-    panels = [p for p in panels if p is not None]
-    if not panels:
-        raise ValueError("Combine node received no price inputs.")
-    merged = pd.concat(panels, axis=1)
-    merged = merged.loc[:, ~merged.columns.duplicated()]
-    merged = merged.sort_index().ffill().dropna(how="all")
-    merged.index.name = "date"
-    return {"prices": merged}
-
-
-register(NodeSpec(
-    type="transform.combine",
-    category="Portfolio",
-    label="Combine",
-    description="Merge multiple price panels into a single asset universe.",
-    inputs=[Port("prices", "prices", "Prices", multi=True)],
-    outputs=[Port("prices", "prices", "Prices")],
-    params=[],
-    execute=_exec_combine,
-))
 
 
 def _exec_leverage(cfg: dict, inputs: dict) -> dict:

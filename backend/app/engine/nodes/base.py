@@ -19,7 +19,9 @@ class Port:
     name: str
     kind: str
     label: str = ""
-    multi: bool = False  # accept multiple inbound edges (inputs only)
+    multi: bool = False  # (legacy) accept multiple inbound edges on one handle
+    dynamic: bool = False  # expand into N single-edge connectors (inputs only)
+    count_param: str = ""  # config key holding the connector count (dynamic ports)
 
 
 @dataclass

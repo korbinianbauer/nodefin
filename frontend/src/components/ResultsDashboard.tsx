@@ -6,11 +6,13 @@ import {
   isMonteCarlo,
   isSweep,
   isWithdrawal,
+  isSavings,
   isMetrics,
   type BacktestResult,
   type MonteCarloResult,
   type SweepResult,
   type WithdrawalResult,
+  type SavingsResult,
   type Results,
   type MetricsValue,
 } from '../lib/api';
@@ -59,19 +61,36 @@ function EquityPanel({ results }: { results: Results }) {
   const [log, setLog] = useState(false);
   const backtests = collect(results, isBacktest);
   const withdrawals = collect(results, isWithdrawal);
-  const all = [...backtests, ...withdrawals];
-  if (all.length === 0) return <Empty msg="Run a graph with a backtest or withdrawal node to see equity curves." />;
+  const savings = collect(results, isSavings);
+  const all = [...backtests, ...withdrawals, ...savings];
+  if (all.length === 0)
+    return <Empty msg="Run a graph with a backtest, savings plan or withdrawal node to see equity curves." />;
 
-  const data = all.map((r, i) => {
-    const eq = (r.value as BacktestResult | WithdrawalResult).equity;
-    return {
-      x: eq.x,
-      y: eq.y,
-      type: 'scatter' as const,
-      mode: 'lines' as const,
-      name: `${r.nodeId}.${r.port}`,
-      line: { color: PALETTE[i % PALETTE.length], width: 2 },
-    };
+  const data = all.flatMap((r, i) => {
+    const eq = (r.value as BacktestResult | WithdrawalResult | SavingsResult).equity;
+    const color = PALETTE[i % PALETTE.length];
+    const traces = [
+      {
+        x: eq.x,
+        y: eq.y,
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        name: `${r.nodeId}.${r.port}`,
+        line: { color, width: 2 },
+      },
+    ];
+    // Savings plans also show cumulative invested capital for comparison.
+    if (isSavings(r.value)) {
+      traces.push({
+        x: r.value.contributed.x,
+        y: r.value.contributed.y,
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        name: `${r.nodeId} invested`,
+        line: { color, width: 1, dash: 'dot' } as { color: string; width: number; dash: 'dot' },
+      } as (typeof traces)[number]);
+    }
+    return traces;
   });
 
   return (
@@ -270,11 +289,19 @@ function fmtVal(v: number | string): string {
 
 function MetricsPanel({ results }: { results: Results }) {
   const backtests = collect(results, isBacktest);
+  const savings = collect(results, isSavings);
+  const withdrawals = collect(results, isWithdrawal);
   const metricsPorts = collect<MetricsValue>(results, isMetrics);
 
   const rows: { source: string; metrics: Record<string, number | string> }[] = [];
   for (const b of backtests) {
     rows.push({ source: `${b.nodeId}.${b.port} (backtest)`, metrics: b.value.metrics });
+  }
+  for (const s of savings) {
+    rows.push({ source: `${s.nodeId}.${s.port} (savings)`, metrics: s.value.metrics });
+  }
+  for (const w of withdrawals) {
+    rows.push({ source: `${w.nodeId}.${w.port} (withdrawal)`, metrics: w.value.metrics });
   }
   for (const mp of metricsPorts) {
     rows.push({ source: `${mp.nodeId}.${mp.port}`, metrics: mp.value });

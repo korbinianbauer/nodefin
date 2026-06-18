@@ -9,6 +9,100 @@ from ..backtester import Portfolio, run_backtest
 from .base import NodeSpec, ParamSpec, Port, register
 
 
+_FREQ = {"monthly": ("ME", 12.0), "quarterly": ("QE", 4.0), "annual": ("YE", 1.0)}
+
+
+def _exec_savings_plan(cfg: dict, inputs: dict) -> dict:
+    pf: Portfolio = inputs.get("portfolio")
+    if pf is None:
+        raise ValueError("Savings Plan requires a portfolio input.")
+    lump = float(cfg.get("initial_lump_sum", 10_000.0) or 0.0)
+    contribution = float(cfg.get("contribution", 500.0) or 0.0)
+    annual_increase = float(cfg.get("annual_increase", 0.0) or 0.0)
+    freq = str(cfg.get("frequency", "monthly") or "monthly").lower()
+    rule, ppy = _FREQ.get(freq, _FREQ["monthly"])
+
+    base = run_backtest(pf)
+    port_ret = base["returns"]
+    periodic = (1.0 + port_ret).resample(rule).prod() - 1.0
+    inc_per_period = (1.0 + annual_increase) ** (1.0 / ppy) - 1.0
+
+    value = lump
+    invested = lump
+    contrib = contribution
+    contribs: list[float] = []
+    start = pf.prices.index[0]
+    dates = [start]
+    values = [value]
+    contributed = [invested]
+    for date, r in periodic.items():
+        value = value * (1.0 + r) + contrib
+        invested += contrib
+        contribs.append(contrib)
+        dates.append(date)
+        values.append(value)
+        contributed.append(invested)
+        contrib *= 1.0 + inc_per_period
+
+    eq = pd.Series(values, index=pd.DatetimeIndex(dates), name="equity")
+    contr = pd.Series(contributed, index=pd.DatetimeIndex(dates), name="contributed")
+    profit = value - invested
+    years = (eq.index[-1] - eq.index[0]).days / 365.25
+
+    # Money-weighted return via Modified Dietz: each contribution is weighted by
+    # the fraction of the horizon it stayed invested. Robust and iteration-free.
+    n = len(contribs)
+    weighted_contrib = sum(c * (n - i) / n for i, c in enumerate(contribs, start=1)) if n else 0.0
+    avg_capital = lump + weighted_contrib
+    if avg_capital > 0 and years > 0:
+        dietz = profit / avg_capital
+        mwr = (1.0 + dietz) ** (1.0 / years) - 1.0 if dietz > -1.0 else float("nan")
+    else:
+        mwr = float("nan")
+
+    return {
+        "result": {
+            "kind": "savings",
+            "equity": eq,
+            "contributed": contr,
+            "metrics": {
+                "initial_lump_sum": round(lump, 2),
+                "contribution": round(contribution, 2),
+                "frequency": freq,
+                "total_invested": round(invested, 2),
+                "final_value": round(value, 2),
+                "profit": round(profit, 2),
+                "total_gain": profit / invested if invested else float("nan"),
+                "money_weighted_return": mwr,
+                "years": round(years, 1),
+            },
+        }
+    }
+
+
+register(NodeSpec(
+    type="savings_plan",
+    category="FIRE",
+    label="Savings Plan",
+    description="Accumulation: an initial lump sum plus recurring contributions "
+                "(optionally rising each year). Outputs the wealth curve, total "
+                "invested and money-weighted (IRR) return.",
+    inputs=[Port("portfolio", "portfolio", "Portfolio")],
+    outputs=[Port("result", "result", "Result")],
+    params=[
+        ParamSpec("initial_lump_sum", "number", "Initial lump sum", default=10_000.0, min=0,
+                  description="One-off investment at the start (0 for a pure savings plan)."),
+        ParamSpec("contribution", "number", "Contribution", default=500.0, min=0,
+                  description="Recurring amount added each period."),
+        ParamSpec("frequency", "select", "Frequency", default="monthly",
+                  options=["monthly", "quarterly", "annual"]),
+        ParamSpec("annual_increase", "number", "Annual increase", default=0.0, min=0, max=1, step=0.005,
+                  description="Yearly step-up of the contribution (e.g. 0.03 = +3%/yr)."),
+    ],
+    execute=_exec_savings_plan,
+))
+
+
 def _exec_withdrawal(cfg: dict, inputs: dict) -> dict:
     pf: Portfolio = inputs.get("portfolio")
     if pf is None:

@@ -16,6 +16,20 @@ import numpy as np
 import pandas as pd
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+# Real datasets shipped with the repo live here (backend/data/).
+REAL_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+
+# Real series bundled with the project, exposed via the ``csv`` source.
+# Maps a ticker to (filename in REAL_DATA_DIR, column holding the price level).
+# The S&P 500 file carries three levels: price-only, gross total return
+# (dividends reinvested) and net total return (after withholding tax).
+_SP500_FILE = "S&P 500 Indices 1885 to 2024.csv"
+REAL_SERIES: dict[str, tuple[str, str]] = {
+    "SPY": (_SP500_FILE, "sp500_gross"),       # total-return proxy for backtests
+    "SP500": (_SP500_FILE, "sp500_price"),     # price index (no dividends)
+    "SP500TR": (_SP500_FILE, "sp500_gross"),   # gross total return
+    "SP500NTR": (_SP500_FILE, "sp500_net"),    # net total return
+}
 
 # Annualised (drift, vol, start_price) used to synthesise the sample history.
 SAMPLE_ASSETS: dict[str, tuple[float, float, float]] = {
@@ -61,7 +75,113 @@ def available_sample_tickers() -> list[str]:
     return list(SAMPLE_ASSETS.keys())
 
 
+def merge_panels(panels) -> pd.DataFrame:
+    """Merge one or more price panels into a single aligned asset universe.
+
+    Series can span different histories (e.g. real S&P from 1885 vs a synthetic
+    sample from 1990), so the result is restricted to the window where every
+    column has data; internal gaps (calendar mismatches / holidays) are
+    forward-filled.
+    """
+    if not isinstance(panels, list):
+        panels = [panels]
+    panels = [p for p in panels if p is not None]
+    if not panels:
+        raise ValueError("No price inputs provided.")
+    merged = pd.concat(panels, axis=1)
+    merged = merged.loc[:, ~merged.columns.duplicated()]
+    merged = merged.sort_index()
+    starts = [merged[c].first_valid_index() for c in merged.columns]
+    ends = [merged[c].last_valid_index() for c in merged.columns]
+    if any(s is None for s in starts):
+        raise ValueError("Received an empty price series.")
+    merged = merged.loc[max(starts):min(ends)].ffill().dropna(how="any")
+    if merged.empty:
+        raise ValueError("Input series have no overlapping date range.")
+    merged.index.name = "date"
+    return merged
+
+
+# Human-readable labels for the ticker picker.
+TICKER_LABELS: dict[str, str] = {
+    "SPY": "S&P 500 — total return (gross)",
+    "SP500": "S&P 500 — price index (no dividends)",
+    "SP500TR": "S&P 500 — total return (gross)",
+    "SP500NTR": "S&P 500 — total return (net of withholding tax)",
+    "QQQ": "Nasdaq-100 proxy (synthetic)",
+    "TLT": "20+yr Treasuries proxy (synthetic)",
+    "GLD": "Gold proxy (synthetic)",
+    "BTC": "Bitcoin proxy (synthetic)",
+    "CASH": "Cash / T-bills (synthetic)",
+}
+
+
+def resolve_source(ticker: str) -> str:
+    """Pick the data source for a single ticker: real CSV if bundled, else sample."""
+    return "csv" if ticker.strip().upper() in REAL_SERIES else "sample"
+
+
+def available_tickers() -> list[str]:
+    """All selectable tickers: bundled real series first, then synthetic samples."""
+    reals = list(REAL_SERIES.keys())
+    samples = [t for t in SAMPLE_ASSETS if t not in REAL_SERIES]
+    return reals + samples
+
+
+def _full_series(ticker: str) -> pd.Series:
+    """Load the complete (unsliced) price series for one ticker, real or sample."""
+    ticker = ticker.strip().upper()
+    if ticker in REAL_SERIES:
+        s = _load_csv(ticker)
+        if s is None:
+            raise ValueError(f"Bundled data file missing for '{ticker}'.")
+        return s.sort_index()
+    sample = _sample_panel()
+    if ticker in sample.columns:
+        return sample[ticker]
+    raise ValueError(f"Unknown ticker '{ticker}'.")
+
+
+def _describe(ticker: str, s: pd.Series) -> dict:
+    from .metrics import infer_periods_per_year
+
+    s = s.dropna().sort_index()
+    span_years = max((s.index[-1] - s.index[0]).days / 365.25, 1e-9)
+    cagr = float((s.iloc[-1] / s.iloc[0]) ** (1.0 / span_years) - 1.0)
+    ppy = infer_periods_per_year(s.index)
+    vol = float(s.pct_change().dropna().std() * np.sqrt(ppy))
+    real = ticker in REAL_SERIES
+    return {
+        "ticker": ticker,
+        "label": TICKER_LABELS.get(ticker, ticker),
+        "kind": "real" if real else "synthetic",
+        "source": "csv" if real else "sample",
+        "start": s.index[0].date().isoformat(),
+        "end": s.index[-1].date().isoformat(),
+        "rows": int(len(s)),
+        "years": round(span_years, 1),
+        "cagr": round(cagr, 4),
+        "vol": round(vol, 4),
+    }
+
+
+@functools.lru_cache(maxsize=1)
+def catalog() -> list[dict]:
+    """Metadata for every selectable ticker (range, row count, CAGR, vol, kind)."""
+    return [_describe(t, _full_series(t)) for t in available_tickers()]
+
+
 def _load_csv(ticker: str) -> pd.Series | None:
+    # Real datasets bundled with the repo take precedence over drop-in files.
+    if ticker in REAL_SERIES:
+        fname, col = REAL_SERIES[ticker]
+        path = REAL_DATA_DIR / fname
+        if path.exists():
+            df = pd.read_csv(path, parse_dates=[0], index_col=0, na_values=["NA"])
+            s = df[col].astype(float)
+            s.name = ticker
+            return s.dropna()
+
     path = DATA_DIR / f"{ticker}.csv"
     if not path.exists():
         return None

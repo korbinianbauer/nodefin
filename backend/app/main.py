@@ -37,6 +37,13 @@ def health() -> dict:
     return {"status": "ok", "node_types": len(all_specs())}
 
 
+@app.get("/api/data/catalog")
+def data_catalog() -> dict:
+    """Selectable tickers with their available date range and summary stats."""
+    from .engine import data
+    return {"tickers": data.catalog()}
+
+
 @app.get("/api/nodes")
 def node_catalog() -> dict:
     """The node library: every registered node type and its parameter schema."""

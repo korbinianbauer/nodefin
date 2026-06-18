@@ -9,11 +9,10 @@ from .base import NodeSpec, ParamSpec, Port, register
 
 
 def _exec_prices(cfg: dict, inputs: dict) -> dict:
-    raw = cfg.get("tickers", "SPY")
-    tickers = raw.split(",") if isinstance(raw, str) else list(raw)
+    ticker = str(cfg.get("ticker", "SPY") or "SPY").strip().upper()
     panel = data_layer.get_prices(
-        tickers=tickers,
-        source=cfg.get("source", "sample"),
+        tickers=[ticker],
+        source=data_layer.resolve_source(ticker),
         start=cfg.get("start") or None,
         end=cfg.get("end") or None,
     )
@@ -24,18 +23,18 @@ register(NodeSpec(
     type="data.prices",
     category="Data Sources",
     label="Market Data",
-    description="Load historical price levels for one or more tickers.",
+    description="Load the historical price series for a single ticker. "
+                "Combine several of these to build a multi-asset universe.",
     inputs=[],
     outputs=[Port("prices", "prices", "Prices")],
     params=[
-        ParamSpec("tickers", "tickers", "Tickers", default="SPY,TLT",
-                  description="Comma separated tickers (e.g. SPY,TLT,GLD)."),
-        ParamSpec("source", "select", "Source", default="sample",
-                  options=["sample", "yahoo", "csv"]),
+        ParamSpec("ticker", "ticker", "Ticker", default="SPY",
+                  options=data_layer.available_tickers(),
+                  description="The instrument to load (one series per node)."),
         ParamSpec("start", "string", "Start date", default="",
-                  description="YYYY-MM-DD (optional)."),
+                  description="YYYY-MM-DD; prefilled from the ticker's range."),
         ParamSpec("end", "string", "End date", default="",
-                  description="YYYY-MM-DD (optional)."),
+                  description="YYYY-MM-DD; prefilled from the ticker's range."),
     ],
     execute=_exec_prices,
 ))

@@ -17,6 +17,7 @@ import {
   type Results,
   type NodeStatus,
   type ParamSpec,
+  type TickerInfo,
 } from './lib/api';
 
 export interface NodeData {
@@ -33,6 +34,7 @@ interface StoreState {
   nodeSpecs: NodeSpec[];
   specByType: Record<string, NodeSpec>;
   categories: Record<string, NodeSpec[]>;
+  dataCatalog: TickerInfo[];
   results: Results;
   nodeStatus: Record<string, NodeStatus>;
   problems: string[];
@@ -43,14 +45,21 @@ interface StoreState {
 
   // actions
   loadCatalog: () => Promise<void>;
+  loadDataCatalog: () => Promise<void>;
   loadTemplate: (id: string) => Promise<void>;
   setGraph: (nodes: FlowNode[], edges: Edge[]) => void;
   addNode: (type: string) => void;
   updateNodeConfig: (id: string, key: string, value: unknown) => void;
+  setInputCount: (id: string, key: string, portName: string, count: number) => void;
   setActiveNode: (id: string | null) => void;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (conn: Connection) => void;
+  onConnectStart: (params: {
+    nodeId?: string | null;
+    handleId?: string | null;
+    handleType?: 'source' | 'target' | null;
+  }) => void;
   run: () => Promise<void>;
   validate: () => Promise<void>;
   save: (name: string) => Promise<void>;
@@ -117,6 +126,7 @@ export const useStore = create<StoreState>((set, get) => ({
   nodeSpecs: [],
   specByType: {},
   categories: {},
+  dataCatalog: [],
   results: {},
   nodeStatus: {},
   problems: [],
@@ -130,6 +140,11 @@ export const useStore = create<StoreState>((set, get) => ({
     const specByType: Record<string, NodeSpec> = {};
     for (const s of cat.nodes) specByType[s.type] = s;
     set({ nodeSpecs: cat.nodes, categories: cat.categories, specByType });
+  },
+
+  loadDataCatalog: async () => {
+    const { tickers } = await api.getDataCatalog();
+    set({ dataCatalog: tickers });
   },
 
   loadTemplate: async (id: string) => {
@@ -179,6 +194,32 @@ export const useStore = create<StoreState>((set, get) => ({
     });
   },
 
+  setInputCount: (id, key, portName, count) => {
+    const handleIdx = (h: string | null | undefined) => {
+      const s = (h ?? '').split('.')[1];
+      const n = s ? parseInt(s, 10) : NaN;
+      return Number.isNaN(n) ? 0 : n;
+    };
+    set({
+      nodes: get().nodes.map((n) =>
+        n.id === id
+          ? { ...n, data: { ...n.data, config: { ...n.data.config, [key]: count } } }
+          : n,
+      ),
+      // Drop edges into connectors that no longer exist after shrinking.
+      edges: portName
+        ? get().edges.filter(
+            (e) =>
+              !(
+                e.target === id &&
+                (e.targetHandle ?? '').split('.')[0] === portName &&
+                handleIdx(e.targetHandle) >= count
+              ),
+          )
+        : get().edges,
+    });
+  },
+
   setActiveNode: (id) => set({ activeNodeId: id }),
 
   onNodesChange: (changes) => {
@@ -186,21 +227,39 @@ export const useStore = create<StoreState>((set, get) => ({
     // Track selection -> active node.
     const sel = changes.find((c) => c.type === 'select' && c.selected);
     if (sel && 'id' in sel) set({ activeNodeId: sel.id });
+    // Clear the inspector target if the active node was deleted.
+    const removed = changes.some((c) => c.type === 'remove' && c.id === get().activeNodeId);
+    if (removed) set({ activeNodeId: null });
   },
 
   onEdgesChange: (changes) => {
     set({ edges: applyEdgeChanges(changes, get().edges) });
   },
 
+  // Pulling a new edge off an input handle clears its existing edge right away,
+  // so the old connection is removed even if the drag is dropped on empty space.
+  onConnectStart: ({ nodeId, handleId, handleType }) => {
+    if (handleType !== 'target' || !nodeId) return;
+    set({
+      edges: get().edges.filter(
+        (e) => !(e.target === nodeId && e.targetHandle === (handleId ?? null)),
+      ),
+    });
+  },
+
   onConnect: (conn) => {
-    const { specByType, nodes } = get();
+    const { specByType, nodes, edges } = get();
     const srcNode = nodes.find((n) => n.id === conn.source);
     const tgtNode = nodes.find((n) => n.id === conn.target);
     if (!srcNode || !tgtNode) return;
     const srcSpec = specByType[srcNode.data.type];
     const tgtSpec = specByType[tgtNode.data.type];
     const srcPort = srcSpec?.outputs.find((p) => p.name === conn.sourceHandle);
-    const tgtPort = tgtSpec?.inputs.find((p) => p.name === conn.targetHandle);
+    // Dynamic inputs use indexed handles ("prices.0"); match them by family.
+    const targetBase = (conn.targetHandle ?? '').split('.')[0];
+    const tgtPort = tgtSpec?.inputs.find(
+      (p) => p.name === conn.targetHandle || (p.dynamic && p.name === targetBase),
+    );
     if (!srcPort || !tgtPort) {
       set({ status: 'Rejected: unknown port' });
       return;
@@ -211,8 +270,13 @@ export const useStore = create<StoreState>((set, get) => ({
       });
       return;
     }
+    // Each connector accepts a single edge: drop any existing edge on this
+    // input handle so the new connection replaces it.
+    const kept = edges.filter(
+      (e) => !(e.target === conn.target && e.targetHandle === conn.targetHandle),
+    );
     set({
-      edges: addEdge({ ...conn, id: nextId('e') }, get().edges),
+      edges: addEdge({ ...conn, id: nextId('e') }, kept),
       status: '',
     });
   },

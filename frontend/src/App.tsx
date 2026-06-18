@@ -8,12 +8,16 @@ import { ResultsDashboard } from './components/ResultsDashboard';
 
 export default function App() {
   const loadCatalog = useStore((s) => s.loadCatalog);
+  const loadDataCatalog = useStore((s) => s.loadDataCatalog);
 
   useEffect(() => {
     loadCatalog().catch((err) => {
       useStore.setState({ status: `Failed to load node catalog: ${err.message}` });
     });
-  }, [loadCatalog]);
+    loadDataCatalog().catch((err) => {
+      useStore.setState({ status: `Failed to load data catalog: ${err.message}` });
+    });
+  }, [loadCatalog, loadDataCatalog]);
 
   return (
     <div className="app">

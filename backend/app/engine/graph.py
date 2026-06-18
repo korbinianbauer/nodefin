@@ -13,6 +13,30 @@ class GraphError(Exception):
     """Raised for structural problems (cycles, missing inputs, bad types)."""
 
 
+def _handle_base(target_port: str) -> str:
+    """The port family of a (possibly indexed) handle: 'prices.2' -> 'prices'."""
+    return target_port.split(".", 1)[0] if target_port else target_port
+
+
+def _handle_index(target_port: str) -> int:
+    """The connector index of an indexed handle: 'prices.2' -> 2 (default 0)."""
+    if target_port and "." in target_port:
+        suffix = target_port.split(".", 1)[1]
+        if suffix.isdigit():
+            return int(suffix)
+    return 0
+
+
+def _match_input(spec, target_port: str):
+    """Find the input port a handle id refers to (dynamic ports match by family)."""
+    for p in spec.inputs:
+        if p.name == target_port:
+            return p
+        if p.dynamic and _handle_base(target_port) == p.name:
+            return p
+    return None
+
+
 def _index_nodes(nodes: list[dict]) -> dict[str, dict]:
     by_id = {}
     for n in nodes:
@@ -47,7 +71,7 @@ def validate(nodes: list[dict], edges: list[dict]) -> list[str]:
         except KeyError:
             continue
         sport = next((p for p in sspec.outputs if p.name == e.get("sourcePort", "")), None)
-        tport = next((p for p in tspec.inputs if p.name == e.get("targetPort", "")), None)
+        tport = _match_input(tspec, e.get("targetPort", ""))
         if sport is None:
             problems.append(f"Node {s} has no output port '{e.get('sourcePort')}'.")
         if tport is None:
@@ -68,6 +92,8 @@ def validate(nodes: list[dict], edges: list[dict]) -> list[str]:
         except KeyError:
             continue
         for port in spec.inputs:
+            if port.dynamic or port.multi:
+                continue  # zero or more connectors allowed
             if not inbound[(n["id"], port.name)]:
                 problems.append(
                     f"Node '{n.get('label', n['id'])}' ({n['type']}) is missing "
@@ -136,7 +162,25 @@ def execute(nodes: list[dict], edges: list[dict]) -> dict:
         resolved: dict[str, object] = {}
         upstream_failed = False
         for port in spec.inputs:
-            sources = inbound.get((nid, port.name), [])
+            if port.dynamic:
+                # Gather every connector in this port family (handles named
+                # '<port>.<index>'), ordered by connector index.
+                items = []
+                for (tgt, tport), srcs in inbound.items():
+                    if tgt == nid and _handle_base(tport) == port.name:
+                        for src in srcs:
+                            items.append((_handle_index(tport), src))
+                items.sort(key=lambda it: it[0])
+                if port.count_param:
+                    try:
+                        cap = int((node.get("config") or {}).get(port.count_param))
+                    except (TypeError, ValueError):
+                        cap = None
+                    if cap is not None:
+                        items = [it for it in items if it[0] < cap]
+                sources = [src for _, src in items]
+            else:
+                sources = inbound.get((nid, port.name), [])
             vals = []
             for src_id, src_port in sources:
                 if src_id not in outputs:
@@ -145,7 +189,7 @@ def execute(nodes: list[dict], edges: list[dict]) -> dict:
                 vals.append(outputs[src_id].get(src_port))
             if upstream_failed:
                 break
-            if port.multi:
+            if port.multi or port.dynamic:
                 resolved[port.name] = vals
             elif vals:
                 resolved[port.name] = vals[0]
@@ -258,6 +302,13 @@ def _serialize_result(res: dict) -> dict:
         return {
             "type": "result", "kind": "withdrawal",
             "equity": _series_to_xy(res["equity"]),
+            "metrics": _clean_dict(res["metrics"]),
+        }
+    if kind == "savings":
+        return {
+            "type": "result", "kind": "savings",
+            "equity": _series_to_xy(res["equity"]),
+            "contributed": _series_to_xy(res["contributed"]),
             "metrics": _clean_dict(res["metrics"]),
         }
     # Generic metrics dict

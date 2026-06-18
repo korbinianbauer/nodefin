@@ -7,6 +7,8 @@ export interface Port {
   kind: string;
   label: string;
   multi: boolean;
+  dynamic: boolean;
+  count_param: string;
 }
 
 export type ParamType =
@@ -16,7 +18,23 @@ export type ParamType =
   | 'bool'
   | 'select'
   | 'weights'
-  | 'tickers';
+  | 'tickers'
+  | 'ticker'
+  | 'input_count';
+
+// One selectable instrument and the data available for it.
+export interface TickerInfo {
+  ticker: string;
+  label: string;
+  kind: 'real' | 'synthetic';
+  source: string;
+  start: string;
+  end: string;
+  rows: number;
+  years: number;
+  cagr: number;
+  vol: number;
+}
 
 export interface ParamSpec {
   name: string;
@@ -187,11 +205,20 @@ export interface WithdrawalResult {
   metrics: Record<string, number | string>;
 }
 
+export interface SavingsResult {
+  type: 'result';
+  kind: 'savings';
+  equity: XY;
+  contributed: XY;
+  metrics: Record<string, number | string>;
+}
+
 export type ResultValue =
   | BacktestResult
   | MonteCarloResult
   | SweepResult
-  | WithdrawalResult;
+  | WithdrawalResult
+  | SavingsResult;
 
 // A metrics port value is a plain object of scalars (no `.type`).
 export type MetricsValue = Record<string, number | string>;
@@ -263,6 +290,10 @@ export function isWithdrawal(v: unknown): v is WithdrawalResult {
   return isResult(v) && v.kind === 'withdrawal';
 }
 
+export function isSavings(v: unknown): v is SavingsResult {
+  return isResult(v) && v.kind === 'savings';
+}
+
 // A "plain metrics" value: an object with no `.type` discriminator and only scalars.
 export function isMetrics(v: unknown): v is MetricsValue {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
@@ -292,6 +323,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   getCatalog: () => request<CatalogResponse>('/api/nodes'),
+  getDataCatalog: () => request<{ tickers: TickerInfo[] }>('/api/data/catalog'),
   getTemplates: () => request<{ templates: TemplateSummary[] }>('/api/templates'),
   getTemplate: (id: string) => request<TemplateResponse>(`/api/templates/${id}`),
   validate: (graph: Graph) =>

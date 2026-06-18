@@ -5,6 +5,7 @@ import json
 
 import numpy as np
 
+from .. import data as data_layer
 from ..backtester import Portfolio
 from ..metrics import infer_periods_per_year
 from .base import NodeSpec, ParamSpec, Port, register
@@ -37,11 +38,26 @@ def _parse_weights(raw) -> dict[str, float]:
     return weights
 
 
+def _coerce_weights(raw, columns: list[str]) -> dict[str, float]:
+    """Build a name->weight map. A list is applied positionally to the input
+    assets (in connector order); a dict/string is parsed by ticker name."""
+    if isinstance(raw, list):
+        out: dict[str, float] = {}
+        for i, col in enumerate(columns):
+            if i >= len(raw):
+                break
+            try:
+                out[col] = float(raw[i])
+            except (TypeError, ValueError):
+                out[col] = 0.0
+        return out
+    return _parse_weights(raw)
+
+
 def _exec_static(cfg: dict, inputs: dict) -> dict:
-    panel = inputs.get("prices")
-    if panel is None:
-        raise ValueError("Static Portfolio requires a price input.")
-    weights = _parse_weights(cfg.get("weights"))
+    panel = data_layer.merge_panels(inputs.get("prices"))
+    weights = _coerce_weights(cfg.get("weights"), list(panel.columns))
+    weights = {k: v for k, v in weights.items() if v}
     if not weights:
         # Default to equal weight over whatever columns exist.
         weights = {c: 1.0 for c in panel.columns}
@@ -53,21 +69,21 @@ register(NodeSpec(
     type="portfolio.static",
     category="Portfolio",
     label="Static Portfolio",
-    description="Fixed target weights, e.g. {\"SPY\": 0.6, \"TLT\": 0.4}.",
-    inputs=[Port("prices", "prices", "Prices")],
+    description="Fixed target weights per asset. Weights are auto-normalised.",
+    inputs=[Port("prices", "prices", "Prices", dynamic=True, count_param="n_inputs")],
     outputs=[Port("portfolio", "portfolio", "Portfolio")],
     params=[
-        ParamSpec("weights", "weights", "Weights", default='{"SPY": 0.6, "TLT": 0.4}',
-                  description='JSON or "SPY:0.6, TLT:0.4". Auto-normalised.'),
+        ParamSpec("n_inputs", "input_count", "Number of assets", default=2, min=1, max=12,
+                  description="How many price inputs this portfolio combines."),
+        ParamSpec("weights", "weights", "Weights", default=[60, 40],
+                  description="Target weight per asset in %, should total 100."),
     ],
     execute=_exec_static,
 ))
 
 
 def _exec_equal(cfg: dict, inputs: dict) -> dict:
-    panel = inputs.get("prices")
-    if panel is None:
-        raise ValueError("Equal Weight requires a price input.")
+    panel = data_layer.merge_panels(inputs.get("prices"))
     weights = {c: 1.0 for c in panel.columns}
     return {"portfolio": Portfolio(prices=panel, weights=weights)}
 
@@ -77,18 +93,19 @@ register(NodeSpec(
     category="Portfolio",
     label="Equal Weight",
     description="Equal weight across every asset in the input panel.",
-    inputs=[Port("prices", "prices", "Prices")],
+    inputs=[Port("prices", "prices", "Prices", dynamic=True, count_param="n_inputs")],
     outputs=[Port("portfolio", "portfolio", "Portfolio")],
-    params=[],
+    params=[
+        ParamSpec("n_inputs", "input_count", "Number of assets", default=2, min=1, max=12,
+                  description="How many price inputs this portfolio combines."),
+    ],
     execute=_exec_equal,
 ))
 
 
 def _exec_risk_parity(cfg: dict, inputs: dict) -> dict:
     """Inverse-volatility weights computed over a trailing lookback window."""
-    panel = inputs.get("prices")
-    if panel is None:
-        raise ValueError("Risk Parity requires a price input.")
+    panel = data_layer.merge_panels(inputs.get("prices"))
     lookback_years = float(cfg.get("lookback_years", 1.0))
     rets = panel.pct_change().dropna()
     ppy = infer_periods_per_year(panel.index)
@@ -107,9 +124,11 @@ register(NodeSpec(
     category="Portfolio",
     label="Risk Parity",
     description="Inverse-volatility allocation across the input assets.",
-    inputs=[Port("prices", "prices", "Prices")],
+    inputs=[Port("prices", "prices", "Prices", dynamic=True, count_param="n_inputs")],
     outputs=[Port("portfolio", "portfolio", "Portfolio")],
     params=[
+        ParamSpec("n_inputs", "input_count", "Number of assets", default=3, min=1, max=12,
+                  description="How many price inputs this portfolio combines."),
         ParamSpec("lookback_years", "number", "Lookback (years)", default=1.0, min=0.1, max=10),
     ],
     execute=_exec_risk_parity,
