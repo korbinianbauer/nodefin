@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+backend/app/nodefin.db
+*.db
+
+# Node / frontend
+node_modules/
+frontend/dist/
+.vite/
+
+# Data caches
+*.parquet
+backend/app/data/*.csv
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
